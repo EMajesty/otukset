@@ -1,0 +1,2 @@
+source /home/emaj/programming/c/otukset/build/bootloader/gdbinit/symbols
+source /home/emaj/programming/c/otukset/build/bootloader/gdbinit/connect

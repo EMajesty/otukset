@@ -1,0 +1,43 @@
+{
+	"sources" : 
+	[
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/CMakeFiles/bootloader"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/CMakeFiles/bootloader.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/CMakeFiles/bootloader-complete.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/bootloader-prefix/src/bootloader-stamp/bootloader-build.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/bootloader-prefix/src/bootloader-stamp/bootloader-configure.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/bootloader-prefix/src/bootloader-stamp/bootloader-download.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/bootloader-prefix/src/bootloader-stamp/bootloader-install.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/bootloader-prefix/src/bootloader-stamp/bootloader-mkdir.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/bootloader-prefix/src/bootloader-stamp/bootloader-patch.rule"
+		},
+		{
+			"file" : "/home/emaj/programming/c/otukset/build/bootloader-prefix/src/bootloader-stamp/bootloader-update.rule"
+		}
+	],
+	"target" : 
+	{
+		"labels" : 
+		[
+			"bootloader"
+		],
+		"name" : "bootloader"
+	}
+}

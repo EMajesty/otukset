@@ -1,0 +1,59 @@
+Command: /nix/store/yxn8caq88x7ncmsbvqn51wk7pwqmvivc-python3-3.13.9-env/bin/python /nix/store/516xlp8n62j0jwj47gjyy6w120zi3rd8-esp-idf-v5.5.2/tools/idf_monitor.py -p /dev/ttyUSB0 -b 115200 --toolchain-prefix riscv32-esp-elf- --target esp32c5 --revision 100 --decode-panic backtrace /home/emaj/programming/c/otukset/build/esp32c5_hello_world.elf /home/emaj/programming/c/otukset/build/bootloader/bootloader.elf -m '/nix/store/yxn8caq88x7ncmsbvqn51wk7pwqmvivc-python3-3.13.9-env/bin/python' '/nix/store/516xlp8n62j0jwj47gjyy6w120zi3rd8-esp-idf-v5.5.2/tools/idf.py'
+ESP-ROM:esp32c5-eco2-20250121
+Build:Jan 21 2025
+rst:0x1 (POWERON),boot:0x36 (SPI_FAST_FLASH_BOOT)
+SPI mode:DIO, clock div:1
+load:0x408556b0,len:0x1720
+load:0x4084bba0,len:0xde0
+load:0x4084e5a0,len:0x3198
+entry 0x4084bbaa
+[0;32mI (23) boot: ESP-IDF v5.5.2 2nd stage bootloader[0m
+[0;32mI (23) boot: compile time Jan  1 1980 00:00:00[0m
+[0;32mI (24) boot: chip revision: v1.0[0m
+[0;32mI (25) boot: efuse block revision: v0.3[0m
+[0;32mI (27) boot.esp32c5: SPI Speed      : 80MHz[0m
+[0;32mI (31) boot.esp32c5: SPI Mode       : DIO[0m
+[0;32mI (35) boot.esp32c5: SPI Flash Size : 2MB[0m
+[0;32mI (38) boot: Enabling RNG early entropy source...[0m
+[0;32mI (43) boot: Partition Table:[0m
+[0;32mI (45) boot: ## Label            Usage          Type ST Offset   Length[0m
+[0;32mI (52) boot:  0 nvs              WiFi data        01 02 00009000 00006000[0m
+[0;32mI (58) boot:  1 phy_init         RF data          01 01 0000f000 00001000[0m
+[0;32mI (65) boot:  2 factory          factory app      00 00 00010000 00100000[0m
+[0;32mI (72) boot: End of partition table[0m
+[0;32mI (75) esp_image: segment 0: paddr=00010020 vaddr=42020020 size=0c414h ( 50196) map[0m
+[0;32mI (91) esp_image: segment 1: paddr=0001c43c vaddr=40800000 size=03bdch ( 15324) load[0m
+[0;32mI (95) esp_image: segment 2: paddr=00020020 vaddr=42000020 size=1e474h (124020) map[0m
+[0;32mI (118) esp_image: segment 3: paddr=0003e49c vaddr=40803bdc size=0ad88h ( 44424) load[0m
+[0;32mI (128) esp_image: segment 4: paddr=0004922c vaddr=4080e980 size=01d34h (  7476) load[0m
+[0;32mI (133) boot: Loaded app from partition at offset 0x10000[0m
+[0;32mI (134) boot: Disabling RNG early entropy source...[0m
+[0;32mI (145) MSPI Timing: Enter flash timing tuning[0m
+[0;32mI (147) cpu_start: Unicore app[0m
+[0;32mI (167) cpu_start: GPIO 12 and 11 are used as console UART I/O pins[0m
+[0;32mI (167) cpu_start: Pro cpu start user code[0m
+[0;32mI (167) cpu_start: cpu freq: 240000000 Hz[0m
+[0;32mI (169) app_init: Application information:[0m
+[0;32mI (173) app_init: Project name:     esp32c5_hello_world[0m
+[0;32mI (178) app_init: App version:      5390ed8[0m
+[0;32mI (182) app_init: Compile time:     Jan  1 1980 00:00:00[0m
+[0;32mI (187) app_init: ELF file SHA256:  abcde51ac...[0m
+[0;32mI (191) app_init: ESP-IDF:          v5.5.2[0m
+[0;32mI (195) efuse_init: Min chip rev:     v1.0[0m
+[0;32mI (199) efuse_init: Max chip rev:     v1.99 [0m
+[0;32mI (203) efuse_init: Chip rev:         v1.0[0m
+[0;32mI (207) heap_init: Initializing. RAM available for dynamic allocation:[0m
+[0;32mI (213) heap_init: At 40811690 len 0004AF10 (299 KiB): RAM[0m
+[0;32mI (218) heap_init: At 4085C5A0 len 00002F58 (11 KiB): RAM[0m
+[0;32mI (223) heap_init: At 50000000 len 00003FE8 (15 KiB): RTCRAM[0m
+[0;32mI (229) spi_flash: detected chip: generic[0m
+[0;32mI (232) spi_flash: flash io: dio[0m
+[0;33mW (235) spi_flash: Detected size(4096k) larger than the size in the binary image header(2048k). Using the size in the binary image header.[0m
+[0;33mW (247) spi_flash: CPU frequency is set to 240MHz. esp_flash_write_encrypted() will automatically limit CPU frequency to 80MHz during execution.[0m
+[0;32mI (260) sleep_gpio: Configure to isolate all GPIO pins in sleep state[0m
+[0;32mI (266) sleep_gpio: Enable automatic switching of GPIO sleep configuration[0m
+[0;32mI (273) coexist: coex firmware version: 7260f71[0m
+[0;32mI (277) coexist: coexist rom version 78e5c6e42[0m
+[0;32mI (281) main_task: Started on CPU0[0m
+[0;32mI (281) main_task: Calling app_main()[0m
+Hello, ESP32-C5!
