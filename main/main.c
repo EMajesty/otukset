@@ -16,6 +16,7 @@
 
 #define LCD_HOST SPI2_HOST
 
+// Portrait (vertical) orientation: 240 wide x 320 tall
 #define LCD_HRES 240
 #define LCD_VRES 320
 #define LCD_OFFSET_X 0
@@ -34,7 +35,39 @@
 #define LCD_PIXEL_CLOCK_HZ (1 * 1000 * 1000)
 #define LCD_DMA_MAX_TRANSFER (LCD_HRES * LCD_VRES * 2 + 8)
 
+#define FONT_SCALE 3
+#define CHAR_W (8 * FONT_SCALE)
+#define CHAR_H (8 * FONT_SCALE)
+
 static const char *TAG = "st7789";
+
+// 8x8 bitmap font.  Each byte is one row; MSB is the leftmost pixel; row 0 is
+// the top.  Only the characters that appear in "Hello World" are defined; all
+// other entries default to zero (blank glyph).
+static const uint8_t FONT8[128][8] = {
+    // 0x42 = 0100 0010 → .#....#.   0x7E = 0111 1110 → .######.
+    ['H'] = {0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x00},
+
+    // 0x82 = #.....#.  0x92 = #..#..#.  0xAA = #.#.#.#.  0x44 = .#...#..
+    ['W'] = {0x82, 0x82, 0x92, 0x92, 0xAA, 0x44, 0x44, 0x00},
+
+    // 0x06 = .....##.  0x3E = ..#####.  0x66 = .##..##.
+    ['d'] = {0x06, 0x06, 0x3E, 0x66, 0x66, 0x66, 0x3E, 0x00},
+
+    // 0x3C = ..####..  0x66 = .##..##.  0x7E = .######.  0x60 = .##.....
+    ['e'] = {0x00, 0x00, 0x3C, 0x66, 0x7E, 0x60, 0x3C, 0x00},
+
+    // 0x38 = ..###...  0x18 = ...##...  0x3C = ..####..
+    ['l'] = {0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00},
+
+    // 0x3C = ..####..  0x66 = .##..##.
+    ['o'] = {0x00, 0x00, 0x3C, 0x66, 0x66, 0x66, 0x3C, 0x00},
+
+    // 0x7C = .#####..  0x60 = .##.....
+    ['r'] = {0x00, 0x00, 0x7C, 0x60, 0x60, 0x60, 0x60, 0x00},
+
+    [' '] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+};
 
 static void lcd_backlight_on(void)
 {
@@ -127,56 +160,49 @@ static void lcd_fill_color(esp_lcd_panel_handle_t panel, uint16_t color)
     free(line);
 }
 
-static uint16_t background_color_for_y(int y)
+// Draw a string at pixel position (x, y) with foreground/background RGB565 colors.
+// Characters are rendered from FONT8 at FONT_SCALE times their native 8x8 size.
+static void lcd_draw_text(esp_lcd_panel_handle_t panel,
+                          const char *text, int x, int y,
+                          uint16_t fg, uint16_t bg)
 {
-    static const uint16_t colors[] = {
-        0xF800, // red
-        0x07E0, // green
-        0x001F, // blue
-        0xFFE0, // yellow
-        0xF81F, // magenta
-        0x07FF, // cyan
-        0xFFFF, // white
-        0x0000, // black
-    };
-    const int color_count = (int)(sizeof(colors) / sizeof(colors[0]));
-    const int band_height = LCD_VRES / color_count;
-    int band = y / band_height;
-    if (band < 0) {
-        band = 0;
-    } else if (band >= color_count) {
-        band = color_count - 1;
-    }
-    return colors[band];
-}
+    int len = (int)strlen(text);
 
-static uint16_t rgb565(uint8_t r, uint8_t g, uint8_t b)
-{
-    return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
-}
-
-static void lcd_test_pattern(esp_lcd_panel_handle_t panel)
-{
-    size_t line_bytes = LCD_HRES * sizeof(uint16_t);
-    uint16_t *line = heap_caps_malloc(line_bytes, MALLOC_CAP_DMA);
+    uint16_t *line = heap_caps_malloc(LCD_HRES * sizeof(uint16_t), MALLOC_CAP_DMA);
     if (!line) {
-        ESP_LOGE(TAG, "Failed to allocate DMA line buffer");
+        ESP_LOGE(TAG, "Failed to allocate text line buffer");
         return;
     }
 
-    while (1) {
-        for (int y = 0; y < LCD_VRES; y++) {
-            uint8_t g = (uint8_t)((y * 255) / (LCD_VRES - 1));
-            for (int x = 0; x < LCD_HRES; x++) {
-                uint8_t r = (uint8_t)((x * 255) / (LCD_HRES - 1));
-                uint8_t b = (uint8_t)(((x ^ y) & 0xFF));
-                line[x] = rgb565(r, g, b);
-            }
-            ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_HRES, y + 1, line));
-        }
+    for (int fy = 0; fy < 8; fy++) {           // font row (0-7)
+        for (int sy = 0; sy < FONT_SCALE; sy++) {  // scale repetition
+            int screen_y = y + fy * FONT_SCALE + sy;
+            if (screen_y < 0 || screen_y >= LCD_VRES) continue;
 
-        vTaskDelay(pdMS_TO_TICKS(1000));
+            // Start with background across the full width
+            for (int i = 0; i < LCD_HRES; i++) line[i] = bg;
+
+            for (int ci = 0; ci < len; ci++) {
+                uint8_t ch = (uint8_t)text[ci];
+                if (ch >= 128) continue;
+                uint8_t row_bits = FONT8[ch][fy];
+
+                for (int fx = 0; fx < 8; fx++) {   // font column (0-7)
+                    uint16_t color = ((row_bits >> (7 - fx)) & 1) ? fg : bg;
+                    for (int sx = 0; sx < FONT_SCALE; sx++) {
+                        int screen_x = x + ci * CHAR_W + fx * FONT_SCALE + sx;
+                        if (screen_x >= 0 && screen_x < LCD_HRES) {
+                            line[screen_x] = color;
+                        }
+                    }
+                }
+            }
+
+            ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, screen_y, LCD_HRES, screen_y + 1, line));
+        }
     }
+
+    free(line);
 }
 
 void app_main(void)
@@ -186,5 +212,23 @@ void app_main(void)
     lcd_backlight_on();
     esp_lcd_panel_handle_t panel = st7789_init();
 
-    lcd_test_pattern(panel);
+    // Clear screen to black
+    lcd_fill_color(panel, 0x0000);
+
+    // "Hello" and "World" on separate lines, each centered horizontally.
+    // Font is 8x8 scaled 3x → each char is 24x24 px.
+    // "Hello" / "World" = 5 chars × 24 px = 120 px wide.
+    const char *text1 = "Hello";
+    const char *text2 = "World";
+
+    int line_gap   = FONT_SCALE * 2;            // 6 px between lines
+    int text_w     = 5 * CHAR_W;               // 120 px (same for both)
+    int total_h    = 2 * CHAR_H + line_gap;    // 54 px
+    int x_center   = (LCD_HRES - text_w) / 2; // 60 px from left
+    int y_start    = (LCD_VRES - total_h) / 2; // vertically centered
+
+    lcd_draw_text(panel, text1, x_center, y_start,                   0xFFFF, 0x0000);
+    lcd_draw_text(panel, text2, x_center, y_start + CHAR_H + line_gap, 0xFFFF, 0x0000);
+
+    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
 }
