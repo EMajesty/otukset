@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -7,80 +8,174 @@
 #include "driver/gpio.h"
 #include "driver/spi_master.h"
 #include "esp_err.h"
+#include "esp_event.h"
 #include "esp_heap_caps.h"
 #include "esp_lcd_panel_io.h"
 #include "esp_lcd_panel_ops.h"
 #include "esp_lcd_panel_vendor.h"
 #include "esp_log.h"
+#include "esp_netif.h"
 #include "esp_system.h"
+#include "esp_wifi.h"
+#include "nvs_flash.h"
 
-#define LCD_HOST SPI2_HOST
-
-// Portrait (vertical) orientation: 240 wide x 320 tall
-#define LCD_HRES 240
-#define LCD_VRES 320
+// ---------------------------------------------------------------------------
+// LCD configuration
+// ---------------------------------------------------------------------------
+#define LCD_HOST    SPI2_HOST
+#define LCD_HRES    240
+#define LCD_VRES    320
 #define LCD_OFFSET_X 0
 #define LCD_OFFSET_Y 0
 #define LCD_MIRROR_X false
 #define LCD_MIRROR_Y false
-#define LCD_SWAP_XY false
+#define LCD_SWAP_XY  false
 
-#define PIN_NUM_MOSI 7
-#define PIN_NUM_SCLK 6
-#define PIN_NUM_CS 10
-#define PIN_NUM_DC 5
-#define PIN_NUM_RST 4
+#define PIN_NUM_MOSI  7
+#define PIN_NUM_SCLK  6
+#define PIN_NUM_CS   10
+#define PIN_NUM_DC    5
+#define PIN_NUM_RST   4
 #define PIN_NUM_BKLT -1
 
-#define LCD_PIXEL_CLOCK_HZ (1 * 1000 * 1000)
+#define LCD_PIXEL_CLOCK_HZ  (20 * 1000 * 1000)
 #define LCD_DMA_MAX_TRANSFER (LCD_HRES * LCD_VRES * 2 + 8)
 
-#define FONT_SCALE 3
-#define CHAR_W (8 * FONT_SCALE)
-#define CHAR_H (8 * FONT_SCALE)
+// ---------------------------------------------------------------------------
+// Colors (RGB565)
+// ---------------------------------------------------------------------------
+#define COLOR_BLACK  0x0000u
+#define COLOR_WHITE  0xFFFFu
+#define COLOR_GREEN  0x07E0u  // excellent signal
+#define COLOR_YELLOW 0xFFE0u  // good signal
+#define COLOR_ORANGE 0xFD20u  // fair signal
+#define COLOR_RED    0xF800u  // poor signal
+#define COLOR_CYAN   0x07FFu  // header
 
-static const char *TAG = "st7789";
+// ---------------------------------------------------------------------------
+// WiFi scan parameters
+// ---------------------------------------------------------------------------
+#define MAX_APS        20
+#define SCAN_INTERVAL_MS 5000
 
-// 8x8 bitmap font.  Each byte is one row; MSB is the leftmost pixel; row 0 is
-// the top.  Only the characters that appear in "Hello World" are defined; all
-// other entries default to zero (blank glyph).
+static const char *TAG = "wifi_scan";
+
+// ---------------------------------------------------------------------------
+// 8×8 bitmap font — full printable ASCII (0x20 – 0x7E).
+// Each entry is 8 bytes; byte 0 is the top row, MSB is the left-most pixel.
+// ---------------------------------------------------------------------------
 static const uint8_t FONT8[128][8] = {
-    // 0x42 = 0100 0010 → .#....#.   0x7E = 0111 1110 → .######.
-    ['H'] = {0x42, 0x42, 0x42, 0x7E, 0x42, 0x42, 0x42, 0x00},
-
-    // 0x82 = #.....#.  0x92 = #..#..#.  0xAA = #.#.#.#.  0x44 = .#...#..
-    ['W'] = {0x82, 0x82, 0x92, 0x92, 0xAA, 0x44, 0x44, 0x00},
-
-    // 0x06 = .....##.  0x3E = ..#####.  0x66 = .##..##.
-    ['d'] = {0x06, 0x06, 0x3E, 0x66, 0x66, 0x66, 0x3E, 0x00},
-
-    // 0x3C = ..####..  0x66 = .##..##.  0x7E = .######.  0x60 = .##.....
-    ['e'] = {0x00, 0x00, 0x3C, 0x66, 0x7E, 0x60, 0x3C, 0x00},
-
-    // 0x38 = ..###...  0x18 = ...##...  0x3C = ..####..
-    ['l'] = {0x38, 0x18, 0x18, 0x18, 0x18, 0x18, 0x3C, 0x00},
-
-    // 0x3C = ..####..  0x66 = .##..##.
-    ['o'] = {0x00, 0x00, 0x3C, 0x66, 0x66, 0x66, 0x3C, 0x00},
-
-    // 0x7C = .#####..  0x60 = .##.....
-    ['r'] = {0x00, 0x00, 0x7C, 0x60, 0x60, 0x60, 0x60, 0x00},
-
-    [' '] = {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00},
+    /* 0x20  ' ' */ [0x20] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0x00},
+    /* 0x21  '!' */ [0x21] = {0x18,0x18,0x18,0x18,0x18,0x00,0x18,0x00},
+    /* 0x22  '"' */ [0x22] = {0x66,0x66,0x66,0x00,0x00,0x00,0x00,0x00},
+    /* 0x23  '#' */ [0x23] = {0x66,0x66,0xFF,0x66,0xFF,0x66,0x66,0x00},
+    /* 0x24  '$' */ [0x24] = {0x18,0x3E,0x60,0x3C,0x06,0x7C,0x18,0x00},
+    /* 0x25  '%' */ [0x25] = {0x62,0x66,0x0C,0x18,0x30,0x66,0x46,0x00},
+    /* 0x26  '&' */ [0x26] = {0x3C,0x66,0x3C,0x38,0x67,0x66,0x3F,0x00},
+    /* 0x27  '\''*/ [0x27] = {0x06,0x0C,0x18,0x00,0x00,0x00,0x00,0x00},
+    /* 0x28  '(' */ [0x28] = {0x0C,0x18,0x30,0x30,0x30,0x18,0x0C,0x00},
+    /* 0x29  ')' */ [0x29] = {0x30,0x18,0x0C,0x0C,0x0C,0x18,0x30,0x00},
+    /* 0x2A  '*' */ [0x2A] = {0x00,0x66,0x3C,0xFF,0x3C,0x66,0x00,0x00},
+    /* 0x2B  '+' */ [0x2B] = {0x00,0x18,0x18,0x7E,0x18,0x18,0x00,0x00},
+    /* 0x2C  ',' */ [0x2C] = {0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x30},
+    /* 0x2D  '-' */ [0x2D] = {0x00,0x00,0x00,0x7E,0x00,0x00,0x00,0x00},
+    /* 0x2E  '.' */ [0x2E] = {0x00,0x00,0x00,0x00,0x00,0x18,0x18,0x00},
+    /* 0x2F  '/' */ [0x2F] = {0x00,0x06,0x0C,0x18,0x30,0x60,0x00,0x00},
+    /* 0x30  '0' */ [0x30] = {0x3C,0x66,0x6E,0x76,0x66,0x66,0x3C,0x00},
+    /* 0x31  '1' */ [0x31] = {0x18,0x38,0x18,0x18,0x18,0x18,0x7E,0x00},
+    /* 0x32  '2' */ [0x32] = {0x3C,0x66,0x06,0x0C,0x30,0x60,0x7E,0x00},
+    /* 0x33  '3' */ [0x33] = {0x3C,0x66,0x06,0x1C,0x06,0x66,0x3C,0x00},
+    /* 0x34  '4' */ [0x34] = {0x06,0x0E,0x1E,0x66,0x7F,0x06,0x06,0x00},
+    /* 0x35  '5' */ [0x35] = {0x7E,0x60,0x7C,0x06,0x06,0x66,0x3C,0x00},
+    /* 0x36  '6' */ [0x36] = {0x3C,0x66,0x60,0x7C,0x66,0x66,0x3C,0x00},
+    /* 0x37  '7' */ [0x37] = {0x7E,0x66,0x0C,0x18,0x18,0x18,0x18,0x00},
+    /* 0x38  '8' */ [0x38] = {0x3C,0x66,0x66,0x3C,0x66,0x66,0x3C,0x00},
+    /* 0x39  '9' */ [0x39] = {0x3C,0x66,0x66,0x3E,0x06,0x66,0x3C,0x00},
+    /* 0x3A  ':' */ [0x3A] = {0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x00},
+    /* 0x3B  ';' */ [0x3B] = {0x00,0x18,0x18,0x00,0x00,0x18,0x18,0x30},
+    /* 0x3C  '<' */ [0x3C] = {0x0E,0x18,0x30,0x60,0x30,0x18,0x0E,0x00},
+    /* 0x3D  '=' */ [0x3D] = {0x00,0x00,0x7E,0x00,0x7E,0x00,0x00,0x00},
+    /* 0x3E  '>' */ [0x3E] = {0x70,0x18,0x0C,0x06,0x0C,0x18,0x70,0x00},
+    /* 0x3F  '?' */ [0x3F] = {0x3C,0x66,0x06,0x0C,0x18,0x00,0x18,0x00},
+    /* 0x40  '@' */ [0x40] = {0x3E,0x63,0x6F,0x69,0x6F,0x60,0x3E,0x00},
+    /* 0x41  'A' */ [0x41] = {0x18,0x3C,0x66,0x7E,0x66,0x66,0x66,0x00},
+    /* 0x42  'B' */ [0x42] = {0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00},
+    /* 0x43  'C' */ [0x43] = {0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x00},
+    /* 0x44  'D' */ [0x44] = {0x78,0x6C,0x66,0x66,0x66,0x6C,0x78,0x00},
+    /* 0x45  'E' */ [0x45] = {0x7E,0x60,0x60,0x78,0x60,0x60,0x7E,0x00},
+    /* 0x46  'F' */ [0x46] = {0x7E,0x60,0x60,0x78,0x60,0x60,0x60,0x00},
+    /* 0x47  'G' */ [0x47] = {0x3C,0x66,0x60,0x6E,0x66,0x66,0x3C,0x00},
+    /* 0x48  'H' */ [0x48] = {0x66,0x66,0x66,0x7E,0x66,0x66,0x66,0x00},
+    /* 0x49  'I' */ [0x49] = {0x3C,0x18,0x18,0x18,0x18,0x18,0x3C,0x00},
+    /* 0x4A  'J' */ [0x4A] = {0x1E,0x0C,0x0C,0x0C,0x0C,0x6C,0x38,0x00},
+    /* 0x4B  'K' */ [0x4B] = {0x66,0x6C,0x78,0x70,0x78,0x6C,0x66,0x00},
+    /* 0x4C  'L' */ [0x4C] = {0x60,0x60,0x60,0x60,0x60,0x60,0x7E,0x00},
+    /* 0x4D  'M' */ [0x4D] = {0x63,0x77,0x7F,0x6B,0x63,0x63,0x63,0x00},
+    /* 0x4E  'N' */ [0x4E] = {0x66,0x76,0x7E,0x7E,0x6E,0x66,0x66,0x00},
+    /* 0x4F  'O' */ [0x4F] = {0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0x00},
+    /* 0x50  'P' */ [0x50] = {0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0x00},
+    /* 0x51  'Q' */ [0x51] = {0x3C,0x66,0x66,0x66,0x66,0x3C,0x0E,0x00},
+    /* 0x52  'R' */ [0x52] = {0x7C,0x66,0x66,0x7C,0x78,0x6C,0x66,0x00},
+    /* 0x53  'S' */ [0x53] = {0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x00},
+    /* 0x54  'T' */ [0x54] = {0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x00},
+    /* 0x55  'U' */ [0x55] = {0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00},
+    /* 0x56  'V' */ [0x56] = {0x66,0x66,0x66,0x66,0x66,0x3C,0x18,0x00},
+    /* 0x57  'W' */ [0x57] = {0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00},
+    /* 0x58  'X' */ [0x58] = {0x66,0x66,0x3C,0x18,0x3C,0x66,0x66,0x00},
+    /* 0x59  'Y' */ [0x59] = {0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x00},
+    /* 0x5A  'Z' */ [0x5A] = {0x7E,0x06,0x0C,0x18,0x30,0x60,0x7E,0x00},
+    /* 0x5B  '[' */ [0x5B] = {0x3C,0x30,0x30,0x30,0x30,0x30,0x3C,0x00},
+    /* 0x5C  '\\'*/ [0x5C] = {0x00,0x60,0x30,0x18,0x0C,0x06,0x00,0x00},
+    /* 0x5D  ']' */ [0x5D] = {0x3C,0x0C,0x0C,0x0C,0x0C,0x0C,0x3C,0x00},
+    /* 0x5E  '^' */ [0x5E] = {0x10,0x38,0x6C,0xC6,0x00,0x00,0x00,0x00},
+    /* 0x5F  '_' */ [0x5F] = {0x00,0x00,0x00,0x00,0x00,0x00,0x00,0xFF},
+    /* 0x60  '`' */ [0x60] = {0x18,0x0C,0x06,0x00,0x00,0x00,0x00,0x00},
+    /* 0x61  'a' */ [0x61] = {0x00,0x00,0x3C,0x06,0x3E,0x66,0x3E,0x00},
+    /* 0x62  'b' */ [0x62] = {0x60,0x60,0x7C,0x66,0x66,0x66,0x7C,0x00},
+    /* 0x63  'c' */ [0x63] = {0x00,0x00,0x3C,0x66,0x60,0x66,0x3C,0x00},
+    /* 0x64  'd' */ [0x64] = {0x06,0x06,0x3E,0x66,0x66,0x66,0x3E,0x00},
+    /* 0x65  'e' */ [0x65] = {0x00,0x00,0x3C,0x66,0x7E,0x60,0x3C,0x00},
+    /* 0x66  'f' */ [0x66] = {0x1C,0x30,0x30,0x7C,0x30,0x30,0x30,0x00},
+    /* 0x67  'g' */ [0x67] = {0x00,0x00,0x3E,0x66,0x66,0x3E,0x06,0x7C},
+    /* 0x68  'h' */ [0x68] = {0x60,0x60,0x7C,0x66,0x66,0x66,0x66,0x00},
+    /* 0x69  'i' */ [0x69] = {0x18,0x00,0x38,0x18,0x18,0x18,0x3C,0x00},
+    /* 0x6A  'j' */ [0x6A] = {0x06,0x00,0x06,0x06,0x06,0x06,0x66,0x3C},
+    /* 0x6B  'k' */ [0x6B] = {0x60,0x60,0x66,0x6C,0x78,0x6C,0x66,0x00},
+    /* 0x6C  'l' */ [0x6C] = {0x38,0x18,0x18,0x18,0x18,0x18,0x3C,0x00},
+    /* 0x6D  'm' */ [0x6D] = {0x00,0x00,0x66,0x7F,0x7F,0x6B,0x63,0x00},
+    /* 0x6E  'n' */ [0x6E] = {0x00,0x00,0x7C,0x66,0x66,0x66,0x66,0x00},
+    /* 0x6F  'o' */ [0x6F] = {0x00,0x00,0x3C,0x66,0x66,0x66,0x3C,0x00},
+    /* 0x70  'p' */ [0x70] = {0x00,0x00,0x7C,0x66,0x66,0x7C,0x60,0x60},
+    /* 0x71  'q' */ [0x71] = {0x00,0x00,0x3E,0x66,0x66,0x3E,0x06,0x06},
+    /* 0x72  'r' */ [0x72] = {0x00,0x00,0x7C,0x66,0x60,0x60,0x60,0x00},
+    /* 0x73  's' */ [0x73] = {0x00,0x00,0x3E,0x60,0x3C,0x06,0x7C,0x00},
+    /* 0x74  't' */ [0x74] = {0x30,0x30,0x7C,0x30,0x30,0x30,0x1C,0x00},
+    /* 0x75  'u' */ [0x75] = {0x00,0x00,0x66,0x66,0x66,0x66,0x3E,0x00},
+    /* 0x76  'v' */ [0x76] = {0x00,0x00,0x66,0x66,0x66,0x3C,0x18,0x00},
+    /* 0x77  'w' */ [0x77] = {0x00,0x00,0x63,0x6B,0x7F,0x3E,0x1C,0x00},
+    /* 0x78  'x' */ [0x78] = {0x00,0x00,0x66,0x3C,0x18,0x3C,0x66,0x00},
+    /* 0x79  'y' */ [0x79] = {0x00,0x00,0x66,0x66,0x66,0x3E,0x06,0x7C},
+    /* 0x7A  'z' */ [0x7A] = {0x00,0x00,0x7E,0x0C,0x18,0x30,0x7E,0x00},
+    /* 0x7B  '{' */ [0x7B] = {0x0E,0x18,0x18,0x70,0x18,0x18,0x0E,0x00},
+    /* 0x7C  '|' */ [0x7C] = {0x18,0x18,0x18,0x18,0x18,0x18,0x18,0x00},
+    /* 0x7D  '}' */ [0x7D] = {0x70,0x18,0x18,0x0E,0x18,0x18,0x70,0x00},
+    /* 0x7E  '~' */ [0x7E] = {0x3B,0x6E,0x00,0x00,0x00,0x00,0x00,0x00},
 };
+
+// ---------------------------------------------------------------------------
+// LCD helpers
+// ---------------------------------------------------------------------------
 
 static void lcd_backlight_on(void)
 {
-#if PIN_NUM_BKLT < 0
-    return;
-#else
+#if PIN_NUM_BKLT >= 0
     gpio_config_t bklt_cfg = {
-        .mode = GPIO_MODE_OUTPUT,
-        .pull_up_en = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type = GPIO_INTR_DISABLE,
+        .pin_bit_mask       = 1ULL << PIN_NUM_BKLT,
+        .mode               = GPIO_MODE_OUTPUT,
+        .pull_up_en         = GPIO_PULLUP_DISABLE,
+        .pull_down_en       = GPIO_PULLDOWN_DISABLE,
+        .intr_type          = GPIO_INTR_DISABLE,
     };
-    bklt_cfg.pin_bit_mask = 1ULL << PIN_NUM_BKLT;
     ESP_ERROR_CHECK(gpio_config(&bklt_cfg));
     gpio_set_level(PIN_NUM_BKLT, 1);
 #endif
@@ -90,41 +185,41 @@ static esp_lcd_panel_handle_t st7789_init(void)
 {
     ESP_ERROR_CHECK(gpio_set_drive_capability(PIN_NUM_SCLK, GPIO_DRIVE_CAP_3));
     ESP_ERROR_CHECK(gpio_set_drive_capability(PIN_NUM_MOSI, GPIO_DRIVE_CAP_3));
-    ESP_ERROR_CHECK(gpio_set_drive_capability(PIN_NUM_DC, GPIO_DRIVE_CAP_3));
-    ESP_ERROR_CHECK(gpio_set_drive_capability(PIN_NUM_RST, GPIO_DRIVE_CAP_3));
-    if (PIN_NUM_CS >= 0) {
+    ESP_ERROR_CHECK(gpio_set_drive_capability(PIN_NUM_DC,   GPIO_DRIVE_CAP_3));
+    ESP_ERROR_CHECK(gpio_set_drive_capability(PIN_NUM_RST,  GPIO_DRIVE_CAP_3));
+    if (PIN_NUM_CS >= 0)
         ESP_ERROR_CHECK(gpio_set_drive_capability(PIN_NUM_CS, GPIO_DRIVE_CAP_3));
-    }
 
     spi_bus_config_t buscfg = {
-        .sclk_io_num = PIN_NUM_SCLK,
-        .mosi_io_num = PIN_NUM_MOSI,
-        .miso_io_num = -1,
-        .quadwp_io_num = -1,
-        .quadhd_io_num = -1,
+        .sclk_io_num     = PIN_NUM_SCLK,
+        .mosi_io_num     = PIN_NUM_MOSI,
+        .miso_io_num     = -1,
+        .quadwp_io_num   = -1,
+        .quadhd_io_num   = -1,
         .max_transfer_sz = LCD_DMA_MAX_TRANSFER,
     };
     ESP_ERROR_CHECK(spi_bus_initialize(LCD_HOST, &buscfg, SPI_DMA_CH_AUTO));
 
     esp_lcd_panel_io_handle_t io_handle = NULL;
     esp_lcd_panel_io_spi_config_t io_config = {
-        .dc_gpio_num = PIN_NUM_DC,
-        .cs_gpio_num = PIN_NUM_CS,
-        .pclk_hz = LCD_PIXEL_CLOCK_HZ,
-        .lcd_cmd_bits = 8,
-        .lcd_param_bits = 8,
-        .spi_mode = 0,
-        .trans_queue_depth = 10,
-        .cs_ena_pretrans = 2,
-        .cs_ena_posttrans = 2,
+        .dc_gpio_num        = PIN_NUM_DC,
+        .cs_gpio_num        = PIN_NUM_CS,
+        .pclk_hz            = LCD_PIXEL_CLOCK_HZ,
+        .lcd_cmd_bits       = 8,
+        .lcd_param_bits     = 8,
+        .spi_mode           = 0,
+        .trans_queue_depth  = 10,
+        .cs_ena_pretrans    = 2,
+        .cs_ena_posttrans   = 2,
     };
-    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST, &io_config, &io_handle));
+    ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi((esp_lcd_spi_bus_handle_t)LCD_HOST,
+                                             &io_config, &io_handle));
 
     esp_lcd_panel_handle_t panel_handle = NULL;
     esp_lcd_panel_dev_config_t panel_config = {
         .reset_gpio_num = PIN_NUM_RST,
-        .color_space = ESP_LCD_COLOR_SPACE_RGB,
-        .data_endian = LCD_RGB_DATA_ENDIAN_LITTLE,
+        .color_space    = ESP_LCD_COLOR_SPACE_RGB,
+        .data_endian    = LCD_RGB_DATA_ENDIAN_LITTLE,
         .bits_per_pixel = 16,
     };
     ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(io_handle, &panel_config, &panel_handle));
@@ -142,44 +237,36 @@ static esp_lcd_panel_handle_t st7789_init(void)
 
 static void lcd_fill_color(esp_lcd_panel_handle_t panel, uint16_t color)
 {
-    size_t line_bytes = LCD_HRES * sizeof(uint16_t);
+    size_t   line_bytes = LCD_HRES * sizeof(uint16_t);
     uint16_t *line = heap_caps_malloc(line_bytes, MALLOC_CAP_DMA);
-    if (!line) {
-        ESP_LOGE(TAG, "Failed to allocate DMA line buffer");
-        return;
-    }
+    if (!line) { ESP_LOGE(TAG, "OOM fill"); return; }
 
-    for (int x = 0; x < LCD_HRES; x++) {
-        line[x] = color;
-    }
-
-    for (int y = 0; y < LCD_VRES; y++) {
+    for (int x = 0; x < LCD_HRES; x++) line[x] = color;
+    for (int y = 0; y < LCD_VRES; y++)
         ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, y, LCD_HRES, y + 1, line));
-    }
 
     free(line);
 }
 
-// Draw a string at pixel position (x, y) with foreground/background RGB565 colors.
-// Characters are rendered from FONT8 at FONT_SCALE times their native 8x8 size.
+// Draw a string at pixel (x, y) using fg/bg RGB565 colors at given scale.
+// The function always fills from x=0 to x=LCD_HRES-1 with bg for each raster
+// line it touches, then paints the glyph pixels on top.
 static void lcd_draw_text(esp_lcd_panel_handle_t panel,
                           const char *text, int x, int y,
-                          uint16_t fg, uint16_t bg)
+                          uint16_t fg, uint16_t bg, int scale)
 {
     int len = (int)strlen(text);
+    int char_w = 8 * scale;
+    int char_h = 8 * scale;
 
     uint16_t *line = heap_caps_malloc(LCD_HRES * sizeof(uint16_t), MALLOC_CAP_DMA);
-    if (!line) {
-        ESP_LOGE(TAG, "Failed to allocate text line buffer");
-        return;
-    }
+    if (!line) { ESP_LOGE(TAG, "OOM text"); return; }
 
-    for (int fy = 0; fy < 8; fy++) {           // font row (0-7)
-        for (int sy = 0; sy < FONT_SCALE; sy++) {  // scale repetition
-            int screen_y = y + fy * FONT_SCALE + sy;
+    for (int fy = 0; fy < 8; fy++) {
+        for (int sy = 0; sy < scale; sy++) {
+            int screen_y = y + fy * scale + sy;
             if (screen_y < 0 || screen_y >= LCD_VRES) continue;
 
-            // Start with background across the full width
             for (int i = 0; i < LCD_HRES; i++) line[i] = bg;
 
             for (int ci = 0; ci < len; ci++) {
@@ -187,48 +274,152 @@ static void lcd_draw_text(esp_lcd_panel_handle_t panel,
                 if (ch >= 128) continue;
                 uint8_t row_bits = FONT8[ch][fy];
 
-                for (int fx = 0; fx < 8; fx++) {   // font column (0-7)
-                    uint16_t color = ((row_bits >> (7 - fx)) & 1) ? fg : bg;
-                    for (int sx = 0; sx < FONT_SCALE; sx++) {
-                        int screen_x = x + ci * CHAR_W + fx * FONT_SCALE + sx;
-                        if (screen_x >= 0 && screen_x < LCD_HRES) {
-                            line[screen_x] = color;
-                        }
+                for (int fx = 0; fx < 8; fx++) {
+                    uint16_t pixel = ((row_bits >> (7 - fx)) & 1) ? fg : bg;
+                    for (int sx = 0; sx < scale; sx++) {
+                        int screen_x = x + ci * char_w + fx * scale + sx;
+                        if (screen_x >= 0 && screen_x < LCD_HRES)
+                            line[screen_x] = pixel;
                     }
                 }
             }
-
-            ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, screen_y, LCD_HRES, screen_y + 1, line));
+            (void)char_h; // used via char_h = 8*scale conceptually
+            ESP_ERROR_CHECK(esp_lcd_panel_draw_bitmap(panel, 0, screen_y,
+                                                      LCD_HRES, screen_y + 1, line));
         }
     }
-
     free(line);
 }
 
+// ---------------------------------------------------------------------------
+// WiFi
+// ---------------------------------------------------------------------------
+
+static void wifi_init(void)
+{
+    ESP_ERROR_CHECK(esp_netif_init());
+    ESP_ERROR_CHECK(esp_event_loop_create_default());
+    esp_netif_create_default_wifi_sta();
+
+    wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
+    ESP_ERROR_CHECK(esp_wifi_init(&cfg));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
+    ESP_ERROR_CHECK(esp_wifi_start());
+}
+
+// Return a color based on RSSI strength.
+static uint16_t rssi_color(int8_t rssi)
+{
+    if (rssi >= -50) return COLOR_GREEN;
+    if (rssi >= -70) return COLOR_YELLOW;
+    if (rssi >= -85) return COLOR_ORANGE;
+    return COLOR_RED;
+}
+
+// Scan for APs and render the list on the panel.
+// Layout (scale=2, 16×16px per char):
+//   Row 0: header  "  WiFi Networks " (cyan on black)
+//   Row 1: divider "----------------" (white on black)
+//   Rows 2+: "SSIDSSIDSSID  -75" left SSID (11 chars), right RSSI (4 chars)
+//   Last row: "  N networks    " count footer
+static void wifi_scan_and_display(esp_lcd_panel_handle_t panel)
+{
+    const int SCALE   = 2;
+    const int CHAR_W  = 8 * SCALE;  // 16 px
+    const int CHAR_H  = 8 * SCALE;  // 16 px
+    const int COLS    = LCD_HRES / CHAR_W;  // 15
+    const int ROWS    = LCD_VRES / CHAR_H;  // 20
+
+    // ---- Scan -------------------------------------------------------
+    wifi_scan_config_t scan_cfg = {
+        .ssid        = NULL,
+        .bssid       = NULL,
+        .channel     = 0,
+        .show_hidden = false,
+    };
+    esp_err_t err = esp_wifi_scan_start(&scan_cfg, true);
+    if (err != ESP_OK) {
+        ESP_LOGE(TAG, "Scan start failed: %s", esp_err_to_name(err));
+        return;
+    }
+
+    uint16_t num_ap = MAX_APS;
+    wifi_ap_record_t *aps = malloc(sizeof(wifi_ap_record_t) * MAX_APS);
+    if (!aps) { ESP_LOGE(TAG, "OOM ap list"); return; }
+
+    esp_wifi_scan_get_ap_records(&num_ap, aps);
+    ESP_LOGI(TAG, "Found %u APs", num_ap);
+
+    // ---- Render -----------------------------------------------------
+    lcd_fill_color(panel, COLOR_BLACK);
+
+    // Header
+    char buf[COLS + 1];
+    snprintf(buf, sizeof(buf), "%-*s", COLS, " WiFi Networks");
+    lcd_draw_text(panel, buf, 0, 0 * CHAR_H, COLOR_CYAN, COLOR_BLACK, SCALE);
+
+    // Divider
+    memset(buf, '-', COLS);
+    buf[COLS] = '\0';
+    lcd_draw_text(panel, buf, 0, 1 * CHAR_H, COLOR_WHITE, COLOR_BLACK, SCALE);
+
+    // AP list — up to (ROWS - 3) entries: rows 2 .. ROWS-2, leaving row ROWS-1 for footer
+    int max_list = ROWS - 3;
+    int shown    = num_ap < (uint16_t)max_list ? (int)num_ap : max_list;
+
+    for (int i = 0; i < shown; i++) {
+        const char *ssid = (const char *)aps[i].ssid;
+        int8_t      rssi = aps[i].rssi;
+
+        // "SSSSSSSSSSS-999" — 11 chars SSID, 4 chars RSSI
+        snprintf(buf, sizeof(buf), "%-11.11s%4d", ssid, rssi);
+
+        uint16_t sig_color = rssi_color(rssi);
+        int row_y = (2 + i) * CHAR_H;
+
+        // Draw SSID part (white) then RSSI part (colored).
+        // Easiest: draw full line in white first, then overdraw the RSSI chars.
+        lcd_draw_text(panel, buf, 0, row_y, COLOR_WHITE, COLOR_BLACK, SCALE);
+
+        // Overdraw the last 4 chars with signal color
+        char rssi_str[5];
+        snprintf(rssi_str, sizeof(rssi_str), "%4d", rssi);
+        lcd_draw_text(panel, rssi_str, 11 * CHAR_W, row_y, sig_color, COLOR_BLACK, SCALE);
+    }
+
+    // Footer
+    char footer[32];
+    snprintf(footer, sizeof(footer), " %d network%s found", num_ap, num_ap == 1 ? "" : "s");
+    snprintf(buf, sizeof(buf), "%-15.15s", footer);
+    lcd_draw_text(panel, buf, 0, (ROWS - 1) * CHAR_H, COLOR_WHITE, COLOR_BLACK, SCALE);
+
+    free(aps);
+}
+
+// ---------------------------------------------------------------------------
+// Entry point
+// ---------------------------------------------------------------------------
 void app_main(void)
 {
-    printf("Hello, ESP32-C5!\n");
+    // NVS is required by WiFi
+    esp_err_t ret = nvs_flash_init();
+    if (ret == ESP_ERR_NVS_NO_FREE_PAGES || ret == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+        ESP_ERROR_CHECK(nvs_flash_erase());
+        ret = nvs_flash_init();
+    }
+    ESP_ERROR_CHECK(ret);
 
     lcd_backlight_on();
     esp_lcd_panel_handle_t panel = st7789_init();
+    lcd_fill_color(panel, COLOR_BLACK);
 
-    // Clear screen to black
-    lcd_fill_color(panel, 0x0000);
+    // Show "Scanning..." while WiFi initialises
+    lcd_draw_text(panel, "Scanning...", 0, LCD_VRES / 2 - 8, COLOR_CYAN, COLOR_BLACK, 2);
 
-    // "Hello" and "World" on separate lines, each centered horizontally.
-    // Font is 8x8 scaled 3x → each char is 24x24 px.
-    // "Hello" / "World" = 5 chars × 24 px = 120 px wide.
-    const char *text1 = "Hello";
-    const char *text2 = "World";
+    wifi_init();
 
-    int line_gap   = FONT_SCALE * 2;            // 6 px between lines
-    int text_w     = 5 * CHAR_W;               // 120 px (same for both)
-    int total_h    = 2 * CHAR_H + line_gap;    // 54 px
-    int x_center   = (LCD_HRES - text_w) / 2; // 60 px from left
-    int y_start    = (LCD_VRES - total_h) / 2; // vertically centered
-
-    lcd_draw_text(panel, text1, x_center, y_start,                   0xFFFF, 0x0000);
-    lcd_draw_text(panel, text2, x_center, y_start + CHAR_H + line_gap, 0xFFFF, 0x0000);
-
-    for (;;) vTaskDelay(pdMS_TO_TICKS(1000));
+    for (;;) {
+        wifi_scan_and_display(panel);
+        vTaskDelay(pdMS_TO_TICKS(SCAN_INTERVAL_MS));
+    }
 }
